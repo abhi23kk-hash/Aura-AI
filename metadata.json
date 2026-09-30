@@ -1,0 +1,7 @@
+{
+  "name": "AURA AI",
+  "description": "A voice-first personal AI companion, tutor, study partner, and productivity assistant with natural interruption, memory RAG, and multilingual speech.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
