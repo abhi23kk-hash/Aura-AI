@@ -10,6 +10,7 @@ import { SettingsModal } from './components/settings/SettingsModal.js';
 import { AuthModal } from './components/auth/AuthModal.js';
 import { DocumentVisionModal } from './components/assistant/DocumentVisionModal.js';
 import { parseVoiceCommand } from './utils/voiceCommands.js';
+import { detectImageGenerationIntent } from './utils/imageIntent.js';
 import { playAssistantChime } from './utils/assistantAudio.js';
 import { extractVisualContentFromText } from './utils/visualContentParser.js';
 import { prepareTextForSpeech } from './utils/speechSanitizer.js';
@@ -354,6 +355,129 @@ export default function App() {
           speak(parsedCmd.speechResponse, 'en');
           return;
         }
+      }
+
+      // Dedicated Image Generation Intent Handling
+      const imgIntent = detectImageGenerationIntent(text);
+      if (imgIntent.isImageIntent) {
+        if (inFlightAbortRef.current) {
+          inFlightAbortRef.current.abort();
+        }
+        const abortController = new AbortController();
+        inFlightAbortRef.current = abortController;
+
+        const userMsg: ChatMessage = {
+          id: 'msg_' + Date.now(),
+          role: 'user',
+          text: text.trim(),
+          timestamp: new Date().toISOString(),
+        };
+
+        const pendingMsgId = 'msg_img_' + Date.now();
+        const pendingAssistantMsg: ChatMessage = {
+          id: pendingMsgId,
+          role: 'assistant',
+          text: "Sure, I'll generate that.",
+          timestamp: new Date().toISOString(),
+          visualContent: {
+            type: 'image',
+            title: imgIntent.title,
+            prompt: imgIntent.prompt,
+            status: 'generating',
+          },
+        };
+
+        setMessages((prev) => [...prev, userMsg, pendingAssistantMsg]);
+        setAssistantState('SPEAKING');
+
+        // Spoken acknowledgment: "Sure, I'll generate that."
+        speak("Sure, I'll generate that.", 'en', () => {
+          setAssistantState('PROCESSING');
+        });
+
+        try {
+          const res = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: imgIntent.prompt,
+              title: imgIntent.title,
+            }),
+            signal: abortController.signal,
+          });
+
+          const data = await res.json();
+
+          if (data.success && data.imageUrl) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsgId
+                  ? {
+                      ...m,
+                      text: "I've generated the image and displayed it on screen.",
+                      visualContent: {
+                        type: 'image',
+                        title: data.title || imgIntent.title,
+                        prompt: data.prompt || imgIntent.prompt,
+                        imageUrl: data.imageUrl,
+                        status: 'completed',
+                      },
+                    }
+                  : m
+              )
+            );
+            speak("I've generated the image and displayed it on screen.", 'en');
+          } else {
+            const errReason = data.error || 'Failed to generate image';
+            console.error('[AURA ImageGen] API Error:', errReason);
+
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsgId
+                  ? {
+                      ...m,
+                      text: "I couldn't generate the image right now.",
+                      visualContent: {
+                        type: 'image',
+                        title: imgIntent.title,
+                        prompt: imgIntent.prompt,
+                        status: 'failed',
+                        error: errReason,
+                      },
+                    }
+                  : m
+              )
+            );
+            speak("I couldn't generate the image right now.", 'en');
+          }
+        } catch (fetchErr: any) {
+          if (fetchErr.name === 'AbortError') return;
+          console.error('[AURA ImageGen] Request error:', fetchErr);
+
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingMsgId
+                ? {
+                    ...m,
+                    text: "I couldn't generate the image right now.",
+                    visualContent: {
+                      type: 'image',
+                      title: imgIntent.title,
+                      prompt: imgIntent.prompt,
+                      status: 'failed',
+                      error: fetchErr?.message || 'Network error during image generation',
+                    },
+                  }
+                : m
+            )
+          );
+          speak("I couldn't generate the image right now.", 'en');
+        } finally {
+          if (inFlightAbortRef.current === abortController) {
+            inFlightAbortRef.current = null;
+          }
+        }
+        return;
       }
     }
 

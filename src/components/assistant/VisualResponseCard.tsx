@@ -20,13 +20,15 @@ import {
   X
 } from 'lucide-react';
 import { VisualContentData } from '../../types.js';
+import { ImageArtifactCard } from './ImageArtifactCard.js';
 
 interface VisualResponseCardProps {
   content: VisualContentData;
   onOpenWebsite?: (url: string, title?: string) => void;
+  onRetryImage?: (prompt: string) => void;
 }
 
-export const VisualResponseCard: React.FC<VisualResponseCardProps> = ({ content, onOpenWebsite }) => {
+export const VisualResponseCard: React.FC<VisualResponseCardProps> = ({ content, onOpenWebsite, onRetryImage }) => {
   const [copied, setCopied] = useState(false);
   
   // Code runner state
@@ -461,108 +463,8 @@ export const VisualResponseCard: React.FC<VisualResponseCardProps> = ({ content,
   }
 
   // 3. Image Generation Result Card
-  if (content.type === 'image' && content.imageUrl) {
-    return (
-      <div className="w-full my-2.5 rounded-xl overflow-hidden border border-cyan-500/30 bg-slate-950/95 shadow-xl transition-all">
-        {/* Header Bar */}
-        <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-900/90 border-b border-slate-800/80 text-xs">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-slate-200 font-medium truncate max-w-[200px] sm:max-w-xs">
-              {content.title || 'Generated Artwork'}
-            </span>
-            <span className="px-1.5 py-0.5 rounded text-[10px] bg-cyan-950/60 text-cyan-300 border border-cyan-500/20">
-              AI Render
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowImageLightbox(true)}
-              className="px-2.5 py-1 rounded-md text-xs font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition flex items-center gap-1"
-            >
-              <Maximize2 className="w-3 h-3" />
-              <span>View Larger</span>
-            </button>
-            <a
-              href={content.imageUrl}
-              download={content.title || 'generated-image.jpg'}
-              className="px-2.5 py-1 rounded-md text-xs font-medium text-cyan-300 bg-cyan-950/80 hover:bg-cyan-900/80 border border-cyan-500/30 transition flex items-center gap-1"
-            >
-              <Download className="w-3 h-3" />
-              <span>Save</span>
-            </a>
-          </div>
-        </div>
-
-        {/* Image Content */}
-        <div 
-          onClick={() => setShowImageLightbox(true)}
-          className="relative group cursor-pointer overflow-hidden bg-slate-950 max-h-80 flex items-center justify-center"
-        >
-          <img
-            src={content.imageUrl}
-            alt={content.title || 'Generated Visual Artwork'}
-            referrerPolicy="no-referrer"
-            className="w-full h-auto max-h-80 object-cover object-center group-hover:scale-105 transition-transform duration-300"
-          />
-          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-            <span className="px-3 py-1.5 rounded-xl bg-slate-900/80 text-white text-xs font-medium flex items-center gap-1.5 backdrop-blur-sm">
-              <Maximize2 className="w-3.5 h-3.5 text-cyan-400" />
-              Click to Enlarge
-            </span>
-          </div>
-        </div>
-
-        {content.prompt && (
-          <div className="px-3.5 py-2 border-t border-slate-800/60 bg-slate-900/40 text-[11px] text-slate-400 flex items-start gap-1.5">
-            <span className="font-semibold text-slate-300 shrink-0">Prompt:</span>
-            <span className="italic truncate">{content.prompt}</span>
-          </div>
-        )}
-
-        {/* High-Res Lightbox Modal */}
-        {showImageLightbox && (
-          <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col p-4 sm:p-6 animate-fadeIn">
-            <div className="flex items-center justify-between pb-3 text-white">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-cyan-400" />
-                <h3 className="font-semibold text-sm">{content.title || 'Generated Visual Result'}</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={content.imageUrl}
-                  download={content.title || 'generated-image.jpg'}
-                  className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium transition flex items-center gap-1.5"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download</span>
-                </a>
-                <button
-                  onClick={() => setShowImageLightbox(false)}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 flex items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2">
-              <img
-                src={content.imageUrl}
-                alt={content.title || 'Full Resolution Visual Artwork'}
-                referrerPolicy="no-referrer"
-                className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
-              />
-            </div>
-            {content.prompt && (
-              <div className="pt-2 text-center text-xs text-slate-400 italic">
-                "{content.prompt}"
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
+  if (content.type === 'image') {
+    return <ImageArtifactCard content={content} onRetry={onRetryImage} />;
   }
 
   // 4. Command Visual Block

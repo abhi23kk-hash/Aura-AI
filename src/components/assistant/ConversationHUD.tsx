@@ -77,6 +77,8 @@ export const ConversationHUD: React.FC<ConversationHUDProps> = ({
 
   // Curated demo scenario chips for fast voice & visual interactions
   const scenarioChips = [
+    { label: '🎨 Red Apple on Table', query: 'Generate an image of a red apple on a white table' },
+    { label: '🎨 Futuristic Car', query: 'Generate an image of a futuristic car' },
     { label: 'Python Calculator', query: 'Give me Python code for a calculator' },
     { label: 'Ration Card Portal', query: 'Give me the ration card portal link' },
     { label: 'Install React', query: 'Give me the command to install React' },
@@ -221,10 +223,13 @@ export const ConversationHUD: React.FC<ConversationHUDProps> = ({
                 {latestAssistantMessage.text}
               </p>
 
-              {/* Visual Content Companion (Code, Links, Commands, Tables, Steps) */}
+              {/* Visual Content Companion (Code, Links, Commands, Tables, Steps, Images) */}
               {latestAssistantMessage.visualContent && (
                 <div className="pt-1.5">
-                  <VisualResponseCard content={latestAssistantMessage.visualContent} />
+                  <VisualResponseCard 
+                    content={latestAssistantMessage.visualContent} 
+                    onRetryImage={(p) => onSendMessage(`Generate an image of ${p}`)}
+                  />
                 </div>
               )}
 
@@ -305,7 +310,10 @@ export const ConversationHUD: React.FC<ConversationHUDProps> = ({
                     <p className="leading-relaxed whitespace-pre-wrap">{m.text}</p>
                     {m.visualContent && (
                       <div className="pt-2">
-                        <VisualResponseCard content={m.visualContent} />
+                        <VisualResponseCard 
+                          content={m.visualContent} 
+                          onRetryImage={(p) => onSendMessage(`Generate an image of ${p}`)}
+                        />
                       </div>
                     )}
                   </div>

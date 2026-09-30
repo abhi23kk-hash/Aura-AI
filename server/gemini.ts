@@ -2,6 +2,7 @@ import { GoogleGenAI, Modality } from '@google/genai';
 import { storage } from './storage.ts';
 import type { MemoryItem, TopicProgress } from '../src/types.ts';
 import { prepareTextForSpeech } from '../src/utils/speechSanitizer.ts';
+import { detectImageGenerationIntent } from '../src/utils/imageIntent.ts';
 import {
   recordExchange,
   resolveConversationReferences,
@@ -32,6 +33,117 @@ export function getGeminiClient(): GoogleGenAI | null {
 export function isDemoMode(): boolean {
   const apiKey = process.env.GEMINI_API_KEY;
   return !apiKey || apiKey === 'MY_GEMINI_API_KEY';
+}
+
+/**
+ * Image Generation with Google's supported Gemini image models
+ * Primary: gemini-3.1-flash-image
+ * Fallback: gemini-3.1-flash-lite-image
+ * Decodes returned inlineData and creates a browser-displayable data URL.
+ */
+export async function generateGeminiImage(
+  prompt: string,
+  options?: { aspectRatio?: string; imageSize?: string }
+): Promise<{
+  success: boolean;
+  imageUrl?: string;
+  mimeType?: string;
+  error?: string;
+  details?: any;
+}> {
+  const ai = getGeminiClient();
+  if (!ai) {
+    return {
+      success: false,
+      error: 'Gemini client is not initialized. Please ensure GEMINI_API_KEY is configured.',
+    };
+  }
+
+  const cleanPrompt = (prompt || '').trim();
+  if (!cleanPrompt) {
+    return {
+      success: false,
+      error: 'Prompt cannot be empty.',
+    };
+  }
+
+  const aspectRatio = options?.aspectRatio || '1:1';
+  const imageSize = options?.imageSize || '1K';
+
+  // Supported Gemini image models
+  const modelsToAttempt = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
+  let lastError = '';
+
+  for (const modelName of modelsToAttempt) {
+    try {
+      console.log(`[AURA ImageGen] Calling ${modelName} with prompt: "${cleanPrompt}"`);
+      const config: any = {
+        imageConfig: {
+          aspectRatio,
+        },
+      };
+      if (modelName === 'gemini-3.1-flash-image') {
+        config.imageConfig.imageSize = imageSize;
+      }
+
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: {
+          parts: [{ text: cleanPrompt }],
+        },
+        config,
+      });
+
+      const candidates = response.candidates || [];
+      if (!candidates.length) {
+        lastError = 'No candidates returned from Gemini API';
+        continue;
+      }
+
+      const parts = candidates[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData && part.inlineData.data) {
+          const rawBase64 = part.inlineData.data;
+          const mimeType = part.inlineData.mimeType || 'image/png';
+
+          // Critical API-response debugging: verify valid bytes
+          if (!rawBase64 || typeof rawBase64 !== 'string' || rawBase64.length < 50) {
+            console.warn('[AURA ImageGen] Received invalid or empty base64 string');
+            continue;
+          }
+
+          const buffer = Buffer.from(rawBase64, 'base64');
+          if (buffer.length < 100) {
+            console.warn('[AURA ImageGen] Decoded image buffer too small (< 100 bytes)');
+            continue;
+          }
+
+          const imageUrl = `data:${mimeType};base64,${rawBase64}`;
+          console.log(`[AURA ImageGen] Successfully generated image! Model: ${modelName}, Size: ${buffer.length} bytes`);
+
+          return {
+            success: true,
+            imageUrl,
+            mimeType,
+          };
+        }
+      }
+
+      lastError = 'No image inlineData found in response candidate parts';
+    } catch (err: any) {
+      console.error(`[AURA ImageGen] Notice from ${modelName}:`, err?.message || err);
+      let msg = err?.message || String(err);
+      if (msg.includes('429') || msg.includes('Quota exceeded') || msg.includes('RESOURCE_EXHAUSTED')) {
+        msg = 'Quota exceeded: Free tier limit is 0 for Gemini image models. A billing-enabled API key is required.';
+      }
+      lastError = msg;
+    }
+  }
+
+  return {
+    success: false,
+    error: lastError || 'Failed to generate image from Gemini model',
+  };
 }
 
 interface ChatParams {
@@ -103,7 +215,46 @@ export async function processAuraChat({
   toolCalls?: string[];
   citations?: { title: string; url: string }[];
   extractedMemory?: { category: string; content: string };
+  visualContent?: any;
 }> {
+  // Check image generation intent first
+  if (!imageAttachment && !documentAttachment) {
+    const imgIntent = detectImageGenerationIntent(userMessage);
+    if (imgIntent.isImageIntent) {
+      console.log(`[AURA] Detected image generation intent for prompt: "${imgIntent.prompt}"`);
+      const imgRes = await generateGeminiImage(imgIntent.prompt, { aspectRatio: '1:1', imageSize: '1K' });
+      if (imgRes.success && imgRes.imageUrl) {
+        const visualContent = {
+          type: 'image' as const,
+          title: imgIntent.title,
+          prompt: imgIntent.prompt,
+          imageUrl: imgRes.imageUrl,
+          status: 'completed' as const,
+        };
+        recordExchange(userId, userMessage, "I've generated the image and displayed it on screen.", visualContent);
+        return {
+          text: "I've generated the image and displayed it on screen.",
+          language: 'en',
+          visualContent,
+        };
+      } else {
+        const visualContent = {
+          type: 'image' as const,
+          title: imgIntent.title,
+          prompt: imgIntent.prompt,
+          status: 'failed' as const,
+          error: imgRes.error || 'Failed to generate image',
+        };
+        recordExchange(userId, userMessage, "I couldn't generate the image right now.", visualContent);
+        return {
+          text: "I couldn't generate the image right now.",
+          language: 'en',
+          visualContent,
+        };
+      }
+    }
+  }
+
   // Ultra-Fast Interruption Fast-Path:
   // Interruption questions & instant clarifications respond in < 2ms without external network lag
   if (!imageAttachment && !documentAttachment && isRapidInterruption(userMessage)) {
@@ -517,51 +668,19 @@ public class Calculator {
     };
   }
 
-  // Image Generation: "Generate an image of a futuristic city"
-  if (
-    lower.includes('futuristic city') ||
-    (lower.includes('image') && (lower.includes('city') || lower.includes('cyberpunk') || lower.includes('futuristic')))
-  ) {
-    const imgData = {
-      type: 'image' as const,
-      title: 'Futuristic Cyberpunk Metropolis',
-      prompt: 'A sprawling futuristic sci-fi cyberpunk city at twilight with glowing neon holographic towers and elevated skybridges',
-      imageUrl: '/generated-images/futuristic_city_1790601914260.jpg',
-      aspectRatio: '16:9',
-    };
-    session.artifacts.lastImage = {
-      title: imgData.title,
-      prompt: imgData.prompt,
-      url: imgData.imageUrl,
-    };
+  // Image Generation Intent in adaptive local engine
+  const imgIntent = detectImageGenerationIntent(userMessage);
+  if (imgIntent.isImageIntent) {
     return {
-      text: "I've generated the futuristic city image for you. You can view it larger or save it to your device.",
+      text: "I couldn't generate the image right now.",
       language: 'en',
-      visualContent: imgData,
-    };
-  }
-
-  // Image Generation: "Generate a dragon fighting another dragon"
-  if (
-    lower.includes('dragon') &&
-    (lower.includes('image') || lower.includes('generate') || lower.includes('fight') || lower.includes('battle'))
-  ) {
-    const imgData = {
-      type: 'image' as const,
-      title: 'Epic Dragons Battle',
-      prompt: 'An epic fantasy battle between two majestic dragons, one fiery red and one crystalline blue lightning dragon clashing mid-air above stormy mountain peaks',
-      imageUrl: '/generated-images/dragons_fighting_1790601928855.jpg',
-      aspectRatio: '16:9',
-    };
-    session.artifacts.lastImage = {
-      title: imgData.title,
-      prompt: imgData.prompt,
-      url: imgData.imageUrl,
-    };
-    return {
-      text: "I've generated the epic dragon battle image for you. You can view it larger or download it.",
-      language: 'en',
-      visualContent: imgData,
+      visualContent: {
+        type: 'image',
+        title: imgIntent.title,
+        prompt: imgIntent.prompt,
+        status: 'failed',
+        error: 'Gemini API client is not configured or image generation quota is unavailable.',
+      },
     };
   }
 

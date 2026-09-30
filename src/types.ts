@@ -74,6 +74,8 @@ export interface VisualContentData {
   imageUrl?: string;
   prompt?: string;
   aspectRatio?: string;
+  status?: 'generating' | 'completed' | 'failed';
+  error?: string;
   executionOutput?: string;
   executionError?: string;
   executionTimeMs?: number;

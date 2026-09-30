@@ -5,7 +5,7 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { storage } from './server/storage.ts';
-import { processAuraChat, generateGeminiSpeech, transcribeAudio, isDemoMode } from './server/gemini.ts';
+import { processAuraChat, generateGeminiSpeech, transcribeAudio, isDemoMode, generateGeminiImage } from './server/gemini.ts';
 import { setupLiveRelay } from './server/liveRelay.ts';
 import { executeCode } from './server/codeRunner.ts';
 import { prepareTextForSpeech } from './src/utils/speechSanitizer.ts';
@@ -259,31 +259,49 @@ async function startServer() {
     }
   });
 
-  // Image Generation Endpoint
+  // Image Generation Endpoint (calls Google's supported Gemini image models)
   app.post('/api/generate-image', async (req, res) => {
     try {
-      const { prompt = '', title } = req.body;
-      const lower = (prompt || '').toLowerCase();
-      let imageUrl = '/generated-images/futuristic_city_1790601914260.jpg';
-      let resolvedTitle = title || 'Generated Image';
-
-      if (lower.includes('dragon')) {
-        imageUrl = '/generated-images/dragons_fighting_1790601928855.jpg';
-        resolvedTitle = title || 'Dragons Battle';
-      } else if (lower.includes('city') || lower.includes('futuristic') || lower.includes('cyberpunk')) {
-        imageUrl = '/generated-images/futuristic_city_1790601914260.jpg';
-        resolvedTitle = title || 'Futuristic City';
+      const { prompt = '', title, aspectRatio = '1:1', imageSize = '1K' } = req.body;
+      const cleanPrompt = (prompt || '').trim();
+      if (!cleanPrompt) {
+        return res.status(400).json({ success: false, error: 'Prompt is required' });
       }
 
-      res.json({
-        success: true,
-        imageUrl,
-        prompt,
-        title: resolvedTitle,
-      });
+      let resolvedTitle = title;
+      if (!resolvedTitle) {
+        resolvedTitle = cleanPrompt.length > 35 
+          ? cleanPrompt.slice(0, 35).replace(/\s+\S*$/, '') + '...'
+          : cleanPrompt;
+        resolvedTitle = resolvedTitle.charAt(0).toUpperCase() + resolvedTitle.slice(1);
+      }
+
+      const result = await generateGeminiImage(cleanPrompt, { aspectRatio, imageSize });
+
+      if (result.success && result.imageUrl) {
+        res.json({
+          success: true,
+          imageUrl: result.imageUrl,
+          mimeType: result.mimeType,
+          prompt: cleanPrompt,
+          title: resolvedTitle,
+        });
+      } else {
+        console.error('[AURA ImageGen] Generation failed:', result.error);
+        const isQuota = result.error?.includes('Quota') || result.error?.includes('429');
+        res.status(isQuota ? 429 : 500).json({
+          success: false,
+          error: result.error || 'Failed to generate image',
+          prompt: cleanPrompt,
+          title: resolvedTitle,
+        });
+      }
     } catch (err: any) {
-      console.error('[AURA ImageGen] Generation error:', err);
-      res.status(500).json({ error: 'Failed to generate image' });
+      console.error('[AURA ImageGen] Generation exception:', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message || 'Failed to generate image',
+      });
     }
   });
 
