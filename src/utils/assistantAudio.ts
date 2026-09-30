@@ -1,6 +1,8 @@
 // Web Audio Sound Synthesizer for AURA Voice Assistant
 // Generates clear harmonic tones without external media files
 
+export const ASSISTANT_OUTPUT_GAIN = 1.8;
+
 let sharedAudioCtx: AudioContext | null = null;
 
 function getAudioContext(): AudioContext | null {
@@ -25,6 +27,9 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
     if (!ctx) return;
 
     const now = ctx.currentTime;
+    const masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(ASSISTANT_OUTPUT_GAIN, now);
+    masterGain.connect(ctx.destination);
 
     if (type === 'wake') {
       // Pleasant bright chord (587.33 Hz -> 880 Hz)
@@ -37,7 +42,7 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
       gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
 
       osc1.connect(gain1);
-      gain1.connect(ctx.destination);
+      gain1.connect(masterGain);
       osc1.start(now);
       osc1.stop(now + 0.18);
 
@@ -50,7 +55,7 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
       gain2.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
 
       osc2.connect(gain2);
-      gain2.connect(ctx.destination);
+      gain2.connect(masterGain);
       osc2.start(now + 0.08);
       osc2.stop(now + 0.38);
 
@@ -66,7 +71,7 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(masterGain);
       osc.start(now);
       osc.stop(now + 0.30);
 
@@ -81,7 +86,7 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(masterGain);
       osc.start(now);
       osc.stop(now + 0.09);
 
@@ -97,7 +102,7 @@ export function playAssistantChime(type: AssistantChimeType = 'wake') {
         gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.18);
 
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(masterGain);
         osc.start(now + delay);
         osc.stop(now + delay + 0.20);
       });

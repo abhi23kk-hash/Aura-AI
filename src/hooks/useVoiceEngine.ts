@@ -3,6 +3,7 @@ import { AssistantState, UserSettings } from '../types.js';
 import { playAssistantChime } from '../utils/assistantAudio.js';
 import { prepareTextForSpeech } from '../utils/speechSanitizer.js';
 import { LiveSessionManager } from '../lib/voice/liveSession.js';
+import { LiveAudioPlayer } from '../lib/voice/audioPlayback.js';
 import {
   queryMicrophonePermission,
   getCachedPermissionStatus,
@@ -39,6 +40,7 @@ export function useVoiceEngine({
   const onToolCallRef = useRef(onToolCall);
   const onAssistantTranscriptRef = useRef(onAssistantTranscript);
   const onUserSpeechFinalRef = useRef(onUserSpeechFinal);
+  const standaloneAudioPlayerRef = useRef<LiveAudioPlayer | null>(null);
 
   useEffect(() => {
     onUserInterruptedRef.current = onUserInterrupted;
@@ -46,6 +48,16 @@ export function useVoiceEngine({
     onAssistantTranscriptRef.current = onAssistantTranscript;
     onUserSpeechFinalRef.current = onUserSpeechFinal;
   });
+
+  // Ensure standalone audio player is cleaned up on unmount
+  useEffect(() => {
+    return () => {
+      if (standaloneAudioPlayerRef.current) {
+        standaloneAudioPlayerRef.current.close();
+        standaloneAudioPlayerRef.current = null;
+      }
+    };
+  }, []);
 
   // 1. Proactively detect existing browser microphone permission state without triggering prompt
   useEffect(() => {
@@ -131,6 +143,12 @@ export function useVoiceEngine({
     if (liveSessionRef.current) {
       liveSessionRef.current.pause();
     }
+    if (standaloneAudioPlayerRef.current) {
+      standaloneAudioPlayerRef.current.stopAll();
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
     setState('IDLE');
     setAudioLevel(0);
   }, []);
@@ -141,10 +159,16 @@ export function useVoiceEngine({
     if (liveSessionRef.current) {
       liveSessionRef.current.interrupt();
     }
+    if (standaloneAudioPlayerRef.current) {
+      standaloneAudioPlayerRef.current.stopAll();
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
     onUserInterruptedRef.current?.();
   }, []);
 
-  // 6. Speak: Used for greetings or synthetic speech when required
+  // 6. Speak: Used for greetings or synthetic speech with GainNode boosting
   const speak = useCallback(
     async (text: string, _lang?: string, onComplete?: () => void) => {
       // Dedicated Speech Sanitization Layer
@@ -155,11 +179,45 @@ export function useVoiceEngine({
         return;
       }
 
-      // If browser SpeechSynthesis is available, play audio for initial greeting
+      // 1. Primary path: Streamlined Gemini model voice audio through Web Audio GainNode & Limiter
+      try {
+        const response = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: speechText,
+            voiceName: settings.voiceName || 'Kore',
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.audio) {
+            if (!standaloneAudioPlayerRef.current) {
+              standaloneAudioPlayerRef.current = new LiveAudioPlayer();
+            }
+            setState('SPEAKING');
+            standaloneAudioPlayerRef.current.playPcmAudio(data.audio, () => {
+              onComplete?.();
+              if (liveSessionRef.current?.getIsActive()) {
+                setState('LISTENING');
+              } else {
+                setState('IDLE');
+              }
+            });
+            return;
+          }
+        }
+      } catch (ttsErr) {
+        console.debug('[AURA Voice] TTS notice, using browser speech engine:', ttsErr);
+      }
+
+      // 2. High-reliability fallback: Browser SpeechSynthesis with maximum audio volume
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(speechText);
         utterance.rate = settings.voiceSpeed || 1.05;
+        utterance.volume = 1.0; // Full 100% device signal output
 
         // Set natural voice language when specified
         if (_lang) {
@@ -199,7 +257,7 @@ export function useVoiceEngine({
         onComplete?.();
       }
     },
-    [settings.voiceSpeed]
+    [settings.voiceSpeed, settings.voiceName]
   );
 
   // 7. Send typed text through the live session

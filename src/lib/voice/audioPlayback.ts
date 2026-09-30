@@ -1,17 +1,23 @@
 /**
- * Audio progressive playback for Gemini Live API
- * Plays 24,000 Hz raw 16-bit linear PCM with jitter-free timeline scheduling
- * and instantaneous interruption support (barge-in cutoff).
+ * Audio progressive playback for Gemini Live API & Assistant Speech
+ * Plays 24,000 Hz raw 16-bit linear PCM with jitter-free timeline scheduling,
+ * calibrated output gain boosting, and instantaneous interruption support (barge-in cutoff).
  */
+
+// Single configurable assistant output gain constant (Safe range 1.0 - 2.0; 1.8 = significantly louder & clear)
+export const ASSISTANT_OUTPUT_GAIN = 1.8;
 
 export class LiveAudioPlayer {
   private audioContext: AudioContext | null = null;
+  private gainNode: GainNode | null = null;
+  private compressorNode: DynamicsCompressorNode | null = null;
   private nextStartTime = 0;
   private activeSources: Set<AudioBufferSourceNode> = new Set();
   private sampleRate = 24000;
   private isPlaying = false;
   private checkEndTimeout: any = null;
   private onPlaybackStateChange?: (isPlaying: boolean) => void;
+  private onTurnEndCallback: (() => void) | null = null;
 
   constructor(onPlaybackStateChange?: (isPlaying: boolean) => void) {
     this.onPlaybackStateChange = onPlaybackStateChange;
@@ -21,11 +27,41 @@ export class LiveAudioPlayer {
     if (!this.audioContext || this.audioContext.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.audioContext = new AudioCtx({ sampleRate: this.sampleRate });
+      this.gainNode = null;
+      this.compressorNode = null;
     }
     if (this.audioContext.state === 'suspended') {
-      this.audioContext.resume();
+      this.audioContext.resume().catch(() => {});
     }
     return this.audioContext;
+  }
+
+  /**
+   * Initializes and maintains the output audio processing chain:
+   * Voice model PCM -> BufferSource -> GainNode (1.8x) -> DynamicsCompressor (anti-clipping limiter) -> Destination
+   */
+  private ensureAudioNodes(): { ctx: AudioContext; gainNode: GainNode } {
+    const ctx = this.ensureAudioContext();
+
+    if (!this.gainNode || !this.compressorNode) {
+      // 1. Calibrated GainNode for audible, punchy assistant speech
+      this.gainNode = ctx.createGain();
+      this.gainNode.gain.setValueAtTime(ASSISTANT_OUTPUT_GAIN, ctx.currentTime);
+
+      // 2. High-fidelity transparent brickwall limiter to strictly prevent clipping or distortion
+      this.compressorNode = ctx.createDynamicsCompressor();
+      this.compressorNode.threshold.setValueAtTime(-1.5, ctx.currentTime); // Soft ceiling
+      this.compressorNode.knee.setValueAtTime(6, ctx.currentTime);        // Musical smooth transition
+      this.compressorNode.ratio.setValueAtTime(12, ctx.currentTime);       // Fast limiter ratio
+      this.compressorNode.attack.setValueAtTime(0.002, ctx.currentTime);   // 2ms fast attack to catch syllable peaks
+      this.compressorNode.release.setValueAtTime(0.12, ctx.currentTime);   // 120ms natural vocal decay
+
+      // Connect: gainNode -> limiter compressor -> speakers (ctx.destination)
+      this.gainNode.connect(this.compressorNode);
+      this.compressorNode.connect(ctx.destination);
+    }
+
+    return { ctx, gainNode: this.gainNode };
   }
 
   /**
@@ -33,7 +69,7 @@ export class LiveAudioPlayer {
    */
   public playChunk(base64Pcm: string) {
     try {
-      const ctx = this.ensureAudioContext();
+      const { ctx, gainNode } = this.ensureAudioNodes();
 
       // Decode base64 to 16-bit linear PCM
       const binary = atob(base64Pcm);
@@ -55,7 +91,9 @@ export class LiveAudioPlayer {
 
       const sourceNode = ctx.createBufferSource();
       sourceNode.buffer = audioBuffer;
-      sourceNode.connect(ctx.destination);
+
+      // Route through GainNode & DynamicsCompressor limiter
+      sourceNode.connect(gainNode);
 
       const currentTime = ctx.currentTime;
       // Schedule gaplessly; if we've fallen behind current time, catch up
@@ -82,6 +120,15 @@ export class LiveAudioPlayer {
     }
   }
 
+  /**
+   * Dedicated full speech utterance playback with completion callback
+   */
+  public playPcmAudio(base64Pcm: string, onComplete?: () => void) {
+    this.stopAll();
+    this.onTurnEndCallback = onComplete || null;
+    this.playChunk(base64Pcm);
+  }
+
   private scheduleEndCheck() {
     if (this.checkEndTimeout) {
       clearTimeout(this.checkEndTimeout);
@@ -92,6 +139,11 @@ export class LiveAudioPlayer {
         this.isPlaying = false;
         this.nextStartTime = 0;
         this.onPlaybackStateChange?.(false);
+        if (this.onTurnEndCallback) {
+          const cb = this.onTurnEndCallback;
+          this.onTurnEndCallback = null;
+          cb();
+        }
       }
     }, 60);
   }
